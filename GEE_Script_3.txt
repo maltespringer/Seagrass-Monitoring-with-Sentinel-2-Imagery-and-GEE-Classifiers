@@ -1,0 +1,198 @@
+// GEE Inputs
+var roi = 'Vector of area of interest'
+var AOI_only_Water = 'Vector of adapted coastline file
+var taubmean = 'shear stress data from folmer et al. (2017)'
+var slope = 'raster data of area slope'
+var expmean = 'raster data containing the exposition time'
+var SG_l_60 = 'flight data polys with sparse seagrass'
+var SG_m_60 = 'flight data polys with dense seagrass'
+var BEF_class = 'rasterized flight data'
+var msg = 'mean size of graines from the AufMod project'
+var Kuestenvegetation = 'digitized polys of coastal vegetation'
+var Muschelbaenke = 'digitized polys of mussel bed'
+var Sand = 'digitized polys of sand'
+var Watt = 'digitized polys of bare wadden flats'
+var Algen = 'digitized polys containing algae'
+var SampleFeatures = 'exported preprocessed samples'
+var Samples_pure = 'exported raw samples'
+var class_image = 'exported classified image'
+
+
+
+var date = 'your date'
+
+// Preprocessing as always
+var s2 = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED");
+ 
+var image = s2.filterBounds(roi)
+              .filterDate('day before your date', 'day after your date')
+              .first();
+
+var image = image.clip(roi);
+var image = image.reproject({
+  crs: 'EPSG:4326',
+  scale: 10
+});
+print(image);
+var image = image.clip(AOI_only_Water);
+
+
+var classValue = [1, 2, 3, 4, 5, 6, 7];
+var classNames = ['Watt', 'Seegras_dicht', 'Seegras_duenn', 'Sand', 'Muschelbaenke', 'Kuestenvegetation', 'Algen'];
+var classPalette = ['A52A2A', '006400', '90EE90', 'FFFF00', '800080', '0000FF', 'FF4500'];
+
+
+
+// Clip Clouds and water ////////////////////////////////////////////////////////////////////////////////
+var qa = image.select('QA60');
+var cloud_shadow = qa.bitwiseAnd(1 << 13).neq(0);
+var clouds = qa.bitwiseAnd(1 << 10).neq(0);
+var cloud_mask = cloud_shadow.or(clouds);
+var cloud_uni = cloud_mask.eq(0).selfMask();
+var image = image.updateMask(cloud_uni);
+
+// NDWI for water clipping
+var ndwi = image.normalizedDifference(['B3', 'B8']);
+var ndwiParams = {min: -1, max: 1, palette: ['green', 'white', 'blue']};
+Map.addLayer(ndwi, ndwiParams, 'NDWI');
+var ndwiThreshold = ndwi.lt(0.0);
+var ndwiMask = ndwiThreshold.updateMask(ndwiThreshold);
+var image = image.updateMask(ndwiMask);
+
+Map.addLayer(image, {bands: ['B8', 'B4', 'B3'], max: 2000}, 'NDWI + Cloud Masked');
+
+// Calculate NDVI ///////////////////////////////////////////////////////////
+var ndvi = image.normalizedDifference(['B8', 'B4']);
+var ndviParams = {min: -1, max: 1, palette: ['blue', 'white', 'green']};
+Map.addLayer(ndvi, ndviParams, 'NDVI');
+
+image = image.addBands(ndvi);
+
+function addIndices(image) {
+  var nir = image.select('B8');
+  var red = image.select('B4');
+  var red_edge = image.select('B5');
+  var green = image.select('B3');
+  var swir = image.select('B11');
+  var L = 0.5;
+
+  var fai = red.add(nir.subtract(red).multiply(705).divide(842 - 665)).subtract(red_edge).rename('FAI');
+  
+  var savi = image.expression(
+    '((NIR - RED) / (NIR + RED + L)) * (1 + L)', {
+      'NIR': nir,
+      'RED': red,
+      'L': L
+    }).rename('SAVI');
+  
+  var ndavi = image.normalizedDifference(['B8', 'B2']).rename('NDAVI');
+  var mndwi = image.normalizedDifference(['B3', 'B11']).rename('MNDWI');
+  
+  var wavi = image.expression(
+    '(NIR - (RED + 0.5 * SWIR)) / (NIR + (RED + 0.5 * SWIR))', {
+      'NIR': nir,
+      'RED': red,
+      'SWIR': swir
+    }).rename('WAVI');
+    
+  var avi = image.expression(
+    '(NIR - GREEN) / (NIR + GREEN + 0.16)', {
+      'NIR': nir,
+      'GREEN': green
+    }).rename('AVI');
+  
+  return image.addBands(fai).addBands(savi).addBands(ndavi).addBands(mndwi).addBands(wavi).addBands(avi);
+}
+
+var image = addIndices(image);
+
+var bandnames = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12', 'nd', 'FAI', 'SAVI', 'NDAVI', 'MNDWI', 'WAVI', 'AVI']
+image = image.select(bandnames);
+
+image = image.addBands(expmean).addBands(taubmean).addBands(slope).addBands(msg);
+
+var oldnames = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12', 'nd', 'FAI', 'SAVI', 'NDAVI', 'MNDWI', 'WAVI', 'AVI', 'b1', 'b1_1', 'b1_2', 'b1_3']
+var newnames = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12', 'NDVI', 'FAI', 'SAVI', 'NDAVI', 'MNDWI', 'WAVI', 'AVI', 'EXPMEAN', 'TAUBMEAN', 'SLOPE', 'MSG']
+
+image = image.select(oldnames, newnames)
+
+
+
+var columns = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12', 'NDVI', 'FAI', 'SAVI', 'NDAVI', 'MNDWI', 'WAVI', 'AVI', 'classvalue', 'sample'];
+var features = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12', 'NDVI', 'FAI', 'SAVI', 'NDAVI', 'MNDWI', 'WAVI', 'AVI'];
+var train = SampleFeatures.filter(ee.Filter.eq('sample', 'train'));
+var test = SampleFeatures.filter(ee.Filter.eq('sample', 'test'));
+
+
+// Mayority voting ///////////////////////////////////////////////////////////////
+var c_layer_mode = class_image.reduce(ee.Reducer.mode());
+
+var visParams = {
+  min: 1,
+  max: 7,
+  palette: classPalette
+};
+
+Map.addLayer(c_layer_mode, visParams, 'Mode');
+
+Samples_pure = Samples_pure.randomColumn('random').sort('random').limit(2000);
+var classified = c_layer_mode.sampleRegions({
+  collection: Samples_pure,
+  properties: ['classvalue'],  
+  scale: 10
+});
+
+print(classified.limit(10))
+
+var conf_Mat = classified.errorMatrix('classvalue', 'mode');
+print('Consensus Confusion Matrix:', conf_Mat);
+print('Consensus Accuracy:', conf_Mat.accuracy());
+print('Consensus Kappa:', conf_Mat.kappa());
+print('Consensus Kappa:', conf_Mat.fscore());
+
+var export_confm = ee.Feature(null, {matrix: conf_Mat.array()})
+
+Export.table.toDrive({
+  collection: ee.FeatureCollection(export_confm),
+  description: 'ConfusionMatrix_Cons_' + date,
+  folder: 'BA_Classification_6K_' + date,
+  fileNamePrefix: 'ConfusionMatrix_Cons_' + date,
+  fileFormat: 'CSV'
+});
+
+// Export the classified image to Google Drive
+Export.image.toDrive({
+  image: c_layer_mode,
+  description: 'LULC_cons_Classified_6K_' + date,
+  folder: 'BA_Classification_6K_' + date,
+  fileNamePrefix: 'LULC_cons_Classified_6K_' + date,
+  crs: 'EPSG:4326',
+  scale: 10,
+  maxPixels: 1e13,
+});
+
+var image = image.addBands(expmean);
+var image = image.addBands(slope);
+var image = image.addBands(taubmean);
+var image = image.addBands(msg);
+
+var ci_bands = class_image.select(['lulc', 'lulc_1', 'lulc_2', 'lulc_3', 'lulc_4']);
+image = image.addBands(ci_bands);
+image = image.addBands(c_layer_mode)
+var image = image.addBands(BEF_class);
+
+print(image.bandNames())
+
+var exportimage = image.select(['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12', 'NDVI', 'FAI', 'SAVI', 'NDAVI', 'MNDWI', 'WAVI', 'AVI', 'EXPMEAN', 'TAUBMEAN', 'SLOPE', 'MSG', 'lulc', 'lulc_1', 'lulc_2', 'lulc_3', 'lulc_4', 'mode'])
+print(exportimage.bandNames());
+
+  Export.image.toDrive({
+    image: exportimage.toFloat(),
+    scale: 10,
+    maxPixels: 1e13,
+    region: AOI_only_Water,
+    crs: 'EPSG:4326',
+    folder: 'BA_Classification_6K_' + date,
+    description: 'Image_plus_Class_Cons_6K_' + date
+  });
+  

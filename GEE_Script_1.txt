@@ -1,0 +1,324 @@
+// GEE Inputs
+var roi = 'Vector of area of interest'
+var AOI_only_Water = 'Vector of adapted coastline file
+var taubmean = 'shear stress data from folmer et al. (2017)'
+var slope = 'raster data of area slope'
+var expmean = 'raster data containing the exposition time'
+var SG_l_60 = 'flight data polys with sparse seagrass'
+var SG_m_60 = 'flight data polys with dense seagrass'
+var BEF_class = 'rasterized flight data'
+var msg = 'mean size of graines from the AufMod project'
+var Kuestenvegetation = 'digitized polys of coastal vegetation'
+var Muschelbaenke = 'digitized polys of mussel bed'
+var Sand = 'digitized polys of sand'
+var Watt = 'digitized polys of bare wadden flats'
+var Algen = 'digitized polys containing algae'
+
+
+
+// Get the desired feature collection and clip it to the AOI ////////////////////////////////////////////
+var date = 'your date';
+ 
+var s2 = ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED");
+ 
+var image = s2.filterBounds(roi)
+              .filterDate('one day before your date', 'the day after your date')
+              .first();
+
+var image = image.clip(roi);
+var image = image.reproject({
+  crs: 'EPSG:4326',
+  scale: 10
+});
+print(image);
+var image = image.clip(AOI_only_Water);
+
+
+// Clip Clouds and water ////////////////////////////////////////////////////////////////////////////////
+var qa = image.select('QA60');
+var cloud_shadow = qa.bitwiseAnd(1 << 13).neq(0);
+var clouds = qa.bitwiseAnd(1 << 10).neq(0);
+var cloud_mask = cloud_shadow.or(clouds);
+var cloud_uni = cloud_mask.eq(0).selfMask();
+var image = image.updateMask(cloud_uni);
+
+
+// NDWI for water clipping
+var ndwi = image.normalizedDifference(['B3', 'B8']);
+var ndwiParams = {min: -1, max: 1, palette: ['green', 'white', 'blue']};
+Map.addLayer(ndwi, ndwiParams, 'NDWI');
+var ndwiThreshold = ndwi.lt(0.0);
+var ndwiMask = ndwiThreshold.updateMask(ndwiThreshold);
+var image = image.updateMask(ndwiMask);
+
+Map.addLayer(image, {bands: ['B8', 'B4', 'B3'], max: 2000}, 'NDWI + Cloud Masked');
+
+
+// Calculate NDVI and export as separate layer ///////////////////////////////////////////////////////////
+var ndvi = image.normalizedDifference(['B8', 'B4']);
+var ndviParams = {min: -1, max: 1, palette: ['blue', 'white', 'green']};
+Map.addLayer(ndvi, ndviParams, 'NDVI');
+
+Export.image.toDrive({
+  image: ndvi,
+  description: 'NDVI_6K_' + date,
+  folder: 'BA_Classification_6K_' + date,
+  fileNamePrefix: 'NDVI_6K_' + date,
+  crs: 'EPSG:4326',
+  scale: 10,
+  maxPixels: 1e13,
+});
+
+image = image.addBands(ndvi);
+var ndvi_sg_zones = ndvi.clip(SG_AREA);
+
+
+// compute vegetation indices as inputs for the classification. Since we don't do simple regression, multicollinearity among these indices is not an issue.
+function addIndices(image) {
+  var nir = image.select('B8');
+  var red = image.select('B4');
+  var red_edge = image.select('B5');
+  var green = image.select('B3');
+  var swir = image.select('B11');
+  var L = 0.5;
+
+  var fai = red.add(nir.subtract(red).multiply(705).divide(842 - 665)).subtract(red_edge).rename('FAI');
+  
+  var savi = image.expression(
+    '((NIR - RED) / (NIR + RED + L)) * (1 + L)', {
+      'NIR': nir,
+      'RED': red,
+      'L': L
+    }).rename('SAVI');
+  
+  var ndavi = image.normalizedDifference(['B8', 'B2']).rename('NDAVI');
+  var mndwi = image.normalizedDifference(['B3', 'B11']).rename('MNDWI');
+  
+  var wavi = image.expression(
+    '(NIR - (RED + 0.5 * SWIR)) / (NIR + (RED + 0.5 * SWIR))', {
+      'NIR': nir,
+      'RED': red,
+      'SWIR': swir
+    }).rename('WAVI');
+    
+  var avi = image.expression(
+    '(NIR - GREEN) / (NIR + GREEN + 0.16)', {
+      'NIR': nir,
+      'GREEN': green
+    }).rename('AVI');
+  
+  return image.addBands(fai).addBands(savi).addBands(ndavi).addBands(mndwi).addBands(wavi).addBands(avi);
+}
+
+var image = addIndices(image);
+
+
+// Rename Bands
+var bandnames = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12', 'nd', 'FAI', 'SAVI', 'NDAVI', 'MNDWI', 'WAVI', 'AVI']
+image = image.select(bandnames);
+
+
+image = image.addBands(expmean).addBands(taubmean).addBands(slope).addBands(msg); // add data from Folmer at al. (2017)
+
+var oldnames = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12', 'nd', 'FAI', 'SAVI', 'NDAVI', 'MNDWI', 'WAVI', 'AVI', 'b1', 'b1_1', 'b1_2', 'b1_3']
+var newnames = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12', 'NDVI', 'FAI', 'SAVI', 'NDAVI', 'MNDWI', 'WAVI', 'AVI', 'EXPMEAN', 'TAUBMEAN', 'SLOPE', 'MSG']
+
+image = image.select(oldnames, newnames)
+
+
+// Get Training- and Testpixel within certain NDVI-intervalls (see Zoffoli et al. (2020))
+var ndvi_60_zones = ndvi_sg_zones.updateMask(ndvi_sg_zones.gte(0.45).and(ndvi_sg_zones.lte(0.7)));
+var Points_in_60 = ndvi_60_zones.sample({
+  scale: 10, 
+  projection: ndvi.projection(),
+  region: SG_AREA,
+  numPixels: 1000000,
+  geometries: true
+});
+var Points_in_60 = Points_in_60.randomColumn('random').sort('random').limit(2000);
+var Points_in_60 = Points_in_60.map(function(feature) {
+  return feature.set('classvalue', 2);
+});
+print('60', Points_in_60.size())
+
+
+
+var ndvi_20_zones = ndvi_sg_zones.updateMask(ndvi_sg_zones.gte(0.225).and(ndvi_sg_zones.lte(0.45)));
+var Points_in_20 = ndvi_20_zones.sample({
+  scale: 10, 
+  projection: ndvi.projection(),
+  region: SG_AREA,
+  numPixels: 100000,
+  geometries: true
+});
+var Points_in_20 = Points_in_20.randomColumn('random').sort('random').limit(2000);
+var Points_in_20 = Points_in_20.map(function(feature) {
+  return feature.set('classvalue', 3);
+});
+print('20', Points_in_20.size())
+
+
+
+// Read in the prepaired Samples for the other classes
+var watt = ee.FeatureCollection(Watt);
+var watt_zones = ndvi.clip(watt);
+var watt_Points = watt_zones.sample({
+  scale: 10, 
+  projection: ndvi.projection(),
+  region: watt,
+  numPixels: 10000,
+  geometries: true
+});
+watt_Points = watt_Points.randomColumn('random').sort('random').limit(2000);
+var SG_watt = watt_Points.map(function(feature) {
+  return feature.set('classvalue', 1);
+});
+Map.addLayer(SG_watt, {}, 'Watt');
+print('Watt', SG_watt.size())
+
+var sand = ee.FeatureCollection(Sand);
+var sand_zones = ndvi.clip(sand);
+var sand_Points = sand_zones.sample({
+  scale: 10, 
+  projection: ndvi.projection(),
+  region: sand,
+  numPixels: 10000,
+  geometries: true
+});
+sand_Points = sand_Points.randomColumn('random').sort('random').limit(2000);
+var SG_sand = sand_Points.map(function(feature) {
+  return feature.set('classvalue', 4);
+});
+Map.addLayer(SG_sand, {}, 'Sand');
+print('Sand', SG_sand.size())
+
+var mb = ee.FeatureCollection(Muschelbaenke);
+var mb_zones = ndvi.clip(mb);
+var mb_Points = mb_zones.sample({
+  scale: 10, 
+  projection: ndvi.projection(),
+  region: mb,
+  numPixels: 10000,
+  geometries: true
+});
+mb_Points = mb_Points.randomColumn('random').sort('random').limit(2000);
+var SG_mb = mb_Points.map(function(feature) {
+  return feature.set('classvalue', 5);
+});
+Map.addLayer(SG_mb, {}, 'Muschelbaenke');
+print('Muschelbaenke', SG_mb.size())
+
+var kv = ee.FeatureCollection(Kuestenvegetation);
+var kv_zones = ndvi.clip(kv);
+var kv_Points = kv_zones.sample({
+  scale: 10, 
+  projection: ndvi.projection(),
+  region: kv,
+  numPixels: 10000,
+  geometries: true
+});
+kv_Points = kv_Points.randomColumn('random').sort('random').limit(2000);
+var SG_kv = kv_Points.map(function(feature) {
+  return feature.set('classvalue', 6);
+});
+Map.addLayer(SG_kv, {}, 'Kuestenvegetation');
+print('Kuestenvegetation', SG_kv.size())
+
+var algen = ee.FeatureCollection(Algen);
+var algen_zones = ndvi.clip(algen);
+var algen_Points = algen_zones.sample({
+  scale: 10, 
+  projection: ndvi.projection(),
+  region: algen,
+  numPixels: 10000,
+  geometries: true
+});
+algen_Points = algen_Points.randomColumn('random').sort('random').limit(2000);
+var SG_Algen = algen_Points.map(function(feature) {
+  return feature.set('classvalue', 7);
+});
+Map.addLayer(SG_Algen, {}, 'Algen');
+print('Algen', SG_Algen.size())
+
+
+// Combine feature collections 
+var samples = SG_watt.merge(Points_in_60).merge(Points_in_20).merge(SG_sand).merge(SG_mb).merge(SG_kv).merge(SG_Algen);
+print('samples', samples.size())
+
+var classValue = [1, 2, 3, 4, 5, 6, 7];
+var classNames = ['Watt', 'Seegras_dicht', 'Seegras_duenn', 'Sand', 'Muschelbaenke', 'Kuestenvegetation', 'Algen'];
+var classPalette = ['A52A2A', '006400', '90EE90', 'FFFF00', '800080', '0000FF', 'FF4500'];
+
+// Test- Training-Split
+var splitSamples = ee.FeatureCollection(classValue.map(function(value){
+  var features = samples.filter(ee.Filter.eq('classvalue', value)).randomColumn();
+  var train = features.filter(ee.Filter.lte('random', 0.75)).map(function(feat){ return feat.set('sample', 'train'); });
+  var test = features.filter(ee.Filter.gt('random', 0.75)).map(function(feat){ return feat.set('sample', 'test'); });
+  return train.merge(test);
+})).flatten();
+print('splitsamles', splitSamples.size())
+
+
+var extract = image.sampleRegions({
+  collection: splitSamples,
+  scale: 10,
+  geometries: true,
+  properties: ['sample', 'classvalue']
+});
+print('extract', extract.size())
+
+
+// Check the valid samples
+var columns = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12', 'NDVI', 'FAI', 'SAVI', 'NDAVI', 'MNDWI', 'WAVI', 'AVI', 'classvalue', 'sample'];
+var features = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B9', 'B11', 'B12', 'NDVI', 'FAI', 'SAVI', 'NDAVI', 'MNDWI', 'WAVI', 'AVI'];
+var validFeatures = extract.filter(ee.Filter.notNull(columns));
+print('valid Features', validFeatures.size())
+
+
+var train = validFeatures.filter(ee.Filter.eq('sample', 'train'));
+print('Train sample size', train.size());
+
+var test = validFeatures.filter(ee.Filter.eq('sample', 'test'));
+print('Test sample size', test.size());
+
+// Check for number of samples per class
+classValue.forEach(function(value) {
+  var classTrain = train.filter(ee.Filter.eq('classvalue', value));
+  print('Train sample size for class ' + value, classTrain.size());
+});
+
+classValue.forEach(function(value) {
+  var classTest = test.filter(ee.Filter.eq('classvalue', value));
+  print('Test sample size for class ' + value, classTest.size());
+});
+
+// export samples
+Export.table.toDrive({
+  collection: validFeatures,
+  fileFormat: 'CSV',
+  selectors: columns,
+  description: 'Samples_NF_6K_' + date,
+  folder: 'BA_Classification_6K_' + date
+});
+
+Export.table.toDrive({
+  collection: samples,
+  fileFormat: 'CSV',
+  //selectors: columns,
+  description: 'Samples_pure_6K_' + date,
+  folder: 'BA_Classification_6K_' + date
+});
+
+Export.table.toAsset({
+  collection: validFeatures,
+  description: 'Samples_NF_6K_' + date,
+  assetId: 'projects/ee-maltespringer78/assets/Samples/Samples_NF_6K_' + date
+});
+
+Export.table.toAsset({
+  collection: samples,
+  description: 'Samples_pure_6K_' + date,
+  assetId: 'projects/ee-maltespringer78/assets/Samples/Samples_pure_6K_' + date
+});
+
+print(image.bandNames())
