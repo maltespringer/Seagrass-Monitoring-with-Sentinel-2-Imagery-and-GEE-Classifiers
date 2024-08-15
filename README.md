@@ -9,6 +9,9 @@ Note that the code represents the final working-stage and was **not** adapted to
 ### Files contained in this repo
 
 * Gee Scripts
+  * File 1: Preprocesses the image, calculates relevant indeces and prepaires sample data for training and testing
+  * File 2: Performes the classification with five different GEE built-in classifiers
+  * File 3: Computes a majority voting of the other classifiers to reduce biases
 
 * Python Scripts
 
