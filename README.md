@@ -14,6 +14,11 @@ Note that the code represents the final working-stage and was **not** adapted to
   * File 3: Computes a majority voting of the other classifiers to reduce biases
 
 * Python Scripts
+  * File 1: Converts the classified raster images to area data and plots the seagrass time-series
+  * File 2: Computes statistical values describing the overall accuracy of the different classifiers
+  * File 3: Plots average confusion matrices of all classifiers
+  * File 4: Plots the geomorphological factors that seam to influence the seagrasses spatial distribution
+  * File 5: Plots the Time-Series of factors that seam to influence the seagrasses temporal distribution
 
 * R Script
   * R was used to compute simple logistic and multinominal regression on the classified data to assess the importance of geomorpholocial factors on seagrass presence or absence. 
