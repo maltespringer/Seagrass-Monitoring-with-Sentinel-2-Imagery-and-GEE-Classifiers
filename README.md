@@ -4,6 +4,8 @@ Athmospherically corrected images were classified in Google Earth Engine by appl
 The spatial distribution of the resulting data were analyzed by multinominal logistic regression analysis. 
 Multiple plots were created to visualize the results.
 
+Note that the code represents the final working-stage and was **not** adapted to be user-friendly besides some very sparse comments here and there.
+
 ### Files contained in this repo
 
 * Gee Scripts
