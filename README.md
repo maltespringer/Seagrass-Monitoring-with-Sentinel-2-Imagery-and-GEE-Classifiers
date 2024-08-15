@@ -16,4 +16,4 @@ Note that the code represents the final working-stage and was **not** adapted to
 * Python Scripts
 
 * R Script
- * R was used to compute simple logistic and multinominal regression on the classified data to assess the importance of geomorpholocial factors on seagrass presence or absence. 
+  * R was used to compute simple logistic and multinominal regression on the classified data to assess the importance of geomorpholocial factors on seagrass presence or absence. 
